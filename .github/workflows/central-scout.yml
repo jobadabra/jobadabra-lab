@@ -15,7 +15,9 @@ on:
   # Why (2 Nov 2026, rs 6b-4, owner: "jobadabra should have no web, no worker"): the public copy of this job is deleted (jobadabra#2962), so this is the only scheduler.
   # Proven by hand first: run 41376186747, 40 broker calls answered, no oidc error, 3871 feeds published.
   schedule:
-    - cron: '20 4,10,16,22 * * *'   # UTC, every 6 h
+    # Why (11 Nov 2026, owner, asked via AskUserQuestion: "Fix now in a new session (Recommended)", jobadabra-web#560): the www Worker now starts this at :25 of the same hours, on time; this cron is only the backup, a minute after it.
+    # GitHub's own schedule ran 2-3 times a day, 1-2 h late, so without the Worker a slot was missed; with it, a late backup would be a second full run, which the `gate` job below skips.
+    - cron: '26 4,10,16,22 * * *'   # UTC, every 6 h
   workflow_dispatch:
     inputs:
       batch: {description: 'candidates to probe this run', required: false, default: '500'}
@@ -36,7 +38,33 @@ env:
   JOBADABRA_LOCATIONS_FILE: config/central_locations.json
 
 jobs:
+  # Why (11 Nov 2026, owner: "Yes, the pane builds it (Recommended)"): the Worker starts the slot on time and GitHub's late cron is the backup; the concurrency group queues the backup, it never drops it,
+  # so without this gate every slot would run the scout twice (~22 min, ~40 Codex broker calls each). A schedule run skips when another run of this workflow was created in the last 3 h and did not fail
+  # or get cancelled (a failed or cancelled start must still be retried by the backup). A hand or Worker start (workflow_dispatch) is never skipped. If the run list cannot be read the gate lets the run go: a duplicate costs less than a missed slot.
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.recent.outputs.skip }}
+    steps:
+      - id: recent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" != "schedule" ]; then echo "gate: $EVENT run, never skipped"; exit 0; fi
+          since=$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          if ! runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/central-scout.yml/runs?per_page=30&created=%3E$since" --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID) | select(.status != \"completed\" or .conclusion == \"success\")] | length"); then
+            echo "::warning::gate: could not read the recent runs; running anyway"; exit 0
+          fi
+          echo "gate: $runs other run(s) since $since"
+          if [ "$runs" -gt 0 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; echo "gate: another run started in the last 3 h (the Worker's start); this backup run is skipped"; fi
   scout:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30   # owner, 24 Oct 2026: 30 minutes so a run reaches more of its feed slice (20 on 23 Oct); the feeds are verified in slices (src/scout_carry.py)
     env:
