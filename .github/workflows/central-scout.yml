@@ -76,6 +76,19 @@ jobs:
     steps:
       - name: When this job started (the scout's deadline counts from here)
         run: echo "JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      - name: A trial takes only a branch of our own engine repo (never a pull ref, a tag or a commit)
+        if: env.TRIAL == 'true'
+        env:
+          ENGINE_REPO: ${{ vars.OWNER_OF_JOBADABRA }}/jobadabra
+          ENGINE_REF: ${{ inputs.engine_ref }}
+        # Why (sk, 11 Nov 2026, owner, asked via AskUserQuestion: "Accept, branches only (Recommended)"): the trial runs the branch's code with the index key, so no outside contributor's code may reach it: only a branch that exists in our own repo, resolved here by name.
+        run: |
+          fail() { echo "::error::engine_ref '$ENGINE_REF' is refused: $1"; exit 1; }
+          case "$ENGINE_REF" in
+            refs/*|pull/*|*..*|-*|*[!A-Za-z0-9._/-]*) fail "a trial takes the plain name of a branch of $ENGINE_REPO" ;;
+          esac
+          printf '%s' "$ENGINE_REF" | grep -Eq '^[0-9a-fA-F]{7,40}$' && fail "that is a commit id, not a branch name"
+          git ls-remote --exit-code --heads "https://github.com/$ENGINE_REPO" "refs/heads/$ENGINE_REF" > /dev/null || fail "no such branch in $ENGINE_REPO (a tag, a pull request or a fork's branch does not count)"
       - name: The public engine (src/, desktop/e2e, the shared actions); this repo is checked out at ops below
         uses: actions/checkout@v5
         with:
