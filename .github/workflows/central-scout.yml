@@ -29,7 +29,8 @@ permissions:
   id-token: write   # the broker knows a run by its OIDC token (desktop/e2e/lib/broker-client.mjs)
 
 concurrency:
-  group: central-scout
+  # Why (sk, 11 Nov 2026): a trial of an unmerged branch writes nothing, so it must not wait behind (or hold up) the real run: a GitHub-side run stuck in progress held every later run for 40 minutes
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.engine_ref || 'main') != 'main' && 'central-scout-trial' || 'central-scout' }}
   cancel-in-progress: false
 
 env:
