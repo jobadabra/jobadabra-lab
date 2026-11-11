@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       batch: {description: 'candidates to probe this run', required: false, default: '500'}
-      engine_ref: {description: 'a TRIAL of an unmerged engine change: the branch or commit of the public engine to run, by hand only; empty or main is the real run. Any other ref reads the real saved memory and index, runs every step, and uploads and saves nothing (a branch must never write the live index); the branch must contain `--no-upload` (jobadabra sk 4/5)', required: false, default: ''}
+      engine_ref: {description: 'a TRIAL of an unmerged engine change: the branch or commit of the public engine to run, by hand only; empty or exactly `main` is the real run. Any other ref reads the real saved memory and index, runs every step, and uploads and saves nothing (a branch must never write the live index); the branch must contain `--no-upload` (jobadabra sk 4/5)', required: false, default: ''}
       country: {description: 'country for the board pass (a name or code from the pool list, e.g. Moldova); empty = the thinnest not done lately', required: false, default: ''}
 
 permissions:
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30   # owner, 24 Oct 2026: 30 minutes so a run reaches more of its feed slice (20 on 23 Oct); the feeds are verified in slices (src/scout_carry.py)
     env:
-      TRIAL: ${{ (inputs.engine_ref || 'main') != 'main' }}   # Why (sk, 11 Nov 2026, owner: no proof waits for a merge or a schedule when a by-hand run can give it): a run of another ref proves a change from its branch, and writes nothing: no index published, no cache, no memory saved
+      TRIAL: ${{ github.event_name == 'workflow_dispatch' && (inputs.engine_ref || 'main') != 'main' }}   # Why (sk, 11 Nov 2026, owner: no proof waits for a merge or a schedule when a by-hand run can give it): a run of another ref proves a change from its branch, and writes nothing: no index published, no cache, no memory saved
       SCOUT_MEMORY_URL: https://www.jobadabra.top/api/scout-memory   # the site's private copy of the scout's memory (web#457); the key is INDEX_PUBLISH_KEY, as for the index
       PYTHONUNBUFFERED: '1'   # 22 Oct 2026: a cancelled run lost every line the scout had printed but not flushed ("no log line for 37 min")
     steps:
@@ -180,7 +180,11 @@ jobs:
           SCOUT_SERPAPI_KEY: ${{ secrets.CENTRAL_SCOUT_SERPAPI_KEY }}   # Google results for the board pass, under its own caps (src/scout_google_boards.py); never as SERPAPI_API_KEY
         run: |
           publish=--publish-index
-          if [ "$TRIAL" = true ]; then publish="--publish-index --no-upload"; echo "trial of engine ref '$ENGINE_REF': every step runs, the index is not uploaded"; fi
+          if [ "$TRIAL" = true ]; then
+            # a trial runs the branch's own code with the key that reads the index (the same key writes it: the site has no read-only key), so the branch must know the flag, else it is refused
+            grep -q -- '--no-upload' src/scout.py || { echo "::error::engine ref '$ENGINE_REF' has no --no-upload (rebase it on the jobadabra 4/5 change); refusing the trial"; exit 1; }
+            publish="--publish-index --no-upload"; echo "trial of engine ref '$ENGINE_REF': every step runs, the index is not uploaded"
+          fi
           node desktop/e2e/broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" -- python -m src scout --batch "$BATCH" $publish
       - name: Tell the owner once if Codex refused or a call failed (the AI judgments wait, nothing is paid)
         if: always() && steps.scout.outputs.skipped == 'true'
