@@ -158,7 +158,7 @@ class CentralScout(unittest.TestCase):
 
     @unittest.skipUnless((ENGINE / 'src' / 'scout_core.py').exists(), 'the public engine is not checked out next to this repo (lab-ci sets JOBADABRA_PUBLIC, so it runs there)')
     def test_the_job_limit_covers_setup_both_budgets_and_the_publish_reserve(self):
-        limit = int(re.search(r'timeout-minutes: (\d+)', self.text).group(1))
+        limit = int(re.search(r'timeout-minutes: (\d+)', self.text[self.text.index('\n  scout:'):]).group(1))   # the scout job's, not the gate's (11 Nov 2026)
         setup, reserve = 6, 3   # minutes: checkout, installs, Common Crawl (3 min cap) before the scout; upload and cost report after
         self.assertLessEqual(setup + (budget_seconds('CENTRAL_BUDGET_S') + budget_seconds('VERIFY_BUDGET_S')) / 60 + reserve, limit)
 
@@ -305,6 +305,64 @@ class ProductBrain(unittest.TestCase):
         self.assertRegex(self.text, r"Send the brief\n\s+if: [^\n]*steps\.brief_ai\.outputs\.skipped != 'true'")
         self.assertRegex(self.text, r"Send the plan\n\s+if: [^\n]*steps\.explore_ai\.outputs\.skipped != 'true'")
         self.assertIn('uses: ./.github/actions/ai-skipped-alert', self.text)
+
+
+class CentralScoutGate(unittest.TestCase):
+    """Owner, 11 Nov 2026, asked via AskUserQuestion: "Yes, the pane builds it (Recommended)" (jobadabra-web#560 starts the scout from the Worker at :25; the cron at :26 is only the backup).
+    The concurrency group queues a late backup instead of dropping it, so each slot would run the scout twice (~22 min, ~40 Codex broker calls) without the gate job.
+    These tests play the gate's script with the real jq over the run lists GitHub returns (a fake `gh` hands them over; a fake `date` stands in for GNU date, which the Linux runner has)."""
+
+    def setUp(self):
+        self.text = (WORKFLOWS / 'central-scout.yml').read_text(encoding='utf-8')
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.root = Path(self.dir.name)
+        (self.root / 'bin').mkdir()
+        gh = self.root / 'bin' / 'gh'
+        gh.write_text('#!/bin/bash\nif [ -n "$FAKE_GH_FAIL" ]; then echo "HTTP 502" >&2; exit 1; fi\nwhile [ $# -gt 0 ]; do if [ "$1" = --jq ]; then jq -r "$2" "$FAKE_RUNS"; exit; fi; shift; done\n')
+        date = self.root / 'bin' / 'date'
+        date.write_text('#!/bin/bash\necho 2026-11-11T13:00:00Z\n')
+        for tool in (gh, date):
+            tool.chmod(0o755)
+
+    def gate(self, event, runs, fail=False):
+        """-> (the gate's `skip` output, its log) for a run of `event` while GitHub lists `runs` (workflow_runs objects, created in the last 3 h) besides run 900."""
+        (self.root / 'runs.json').write_text(__import__('json').dumps({'workflow_runs': runs}))
+        script = self.root / 'gate.sh'
+        script.write_text(script_of(step(self.text.replace('      - id: recent', '      - name: gate\n        id: recent'), 'gate')))
+        out = self.root / 'output'
+        out.write_text('')
+        env = {'PATH': f"{self.root / 'bin'}:{os.environ['PATH']}", 'HOME': str(self.root), 'EVENT': event, 'GITHUB_OUTPUT': str(out), 'GITHUB_RUN_ID': '900',
+               'GITHUB_REPOSITORY': 'jobadabra/jobadabra-lab', 'FAKE_RUNS': str(self.root / 'runs.json'), 'GH_TOKEN': 'x'}
+        if fail:
+            env['FAKE_GH_FAIL'] = '1'
+        done = subprocess.run(['bash', '-e', str(script)], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        values = dict(line.split('=', 1) for line in out.read_text().splitlines())
+        return values['skip'] if 'skip' in values else None, done.stdout + done.stderr
+
+    def test_the_workflow_wires_the_gate_before_the_scout_and_the_backup_follows_the_worker(self):
+        self.assertIn("cron: '26 4,10,16,22 * * *'", self.text, "the Worker (jobadabra-web, shared/intel-start.js) starts it at :25; the backup is the next minute")
+        self.assertRegex(self.text, r"(?ms)^  gate:\n.*?permissions:\n      actions: read\n")
+        self.assertRegex(self.text, r"(?ms)^  scout:\n    needs: gate\n    if: needs\.gate\.outputs\.skip != 'true'\n")
+
+    def test_a_schedule_run_is_skipped_when_the_worker_started_one_and_it_is_running_or_succeeded(self):
+        running = {'id': 100, 'status': 'in_progress', 'conclusion': None}
+        done = {'id': 101, 'status': 'completed', 'conclusion': 'success'}
+        self.assertEqual(self.gate('schedule', [running])[0], 'true', 'the Worker\'s start is still running: the queued backup must not run it again')
+        self.assertEqual(self.gate('schedule', [done])[0], 'true', 'the Worker\'s start finished: the late backup must not run it again')
+
+    def test_a_backup_still_runs_when_nothing_good_started_lately(self):
+        self.assertEqual(self.gate('schedule', [])[0], 'false', 'no run in the last 3 h: GitHub\'s run is the only start (the Worker had no token)')
+        for conclusion in ('failure', 'cancelled', 'timed_out'):
+            self.assertEqual(self.gate('schedule', [{'id': 100, 'status': 'completed', 'conclusion': conclusion}])[0], 'false', f'a {conclusion} start must still be retried')
+        self.assertEqual(self.gate('schedule', [{'id': 900, 'status': 'in_progress', 'conclusion': None}])[0], 'false', 'the run itself is never counted')
+
+    def test_a_hand_or_worker_start_is_never_skipped_and_an_unreadable_list_lets_the_run_go(self):
+        self.assertEqual(self.gate('workflow_dispatch', [{'id': 100, 'status': 'in_progress', 'conclusion': None}])[0], 'false')
+        skip, log = self.gate('schedule', [], fail=True)
+        self.assertEqual(skip, 'false', 'a duplicate costs less than a missed slot')
+        self.assertIn('::warning::', log)
 
 
 if __name__ == '__main__':
