@@ -23,6 +23,7 @@ on:
       batch: {description: 'candidates to probe this run', required: false, default: '500'}
       engine_ref: {description: 'a TRIAL of an unmerged engine change: the branch or commit of the public engine to run, by hand only; empty or exactly `main` is the real run. Any other ref reads the real saved memory and index, runs every step, and uploads and saves nothing (a branch must never write the live index); the branch must contain `--no-upload` (jobadabra sk 4/5)', required: false, default: ''}
       country: {description: 'set: ONLY the board pass job runs, for this country (a name or code from the pool list, e.g. Moldova), a few minutes; empty = the whole scout, then the board pass for the thinnest country not done lately', required: false, default: ''}
+      browser_final: {description: "job board hosts a trial's headless browser was stopped at (a refusal, a bot check, a sign-in page), separated by commas: kept as stopped before the board pass reads, so a real pass never opens them again (a trial saves no memory)", required: false, type: string, default: ''}
       kinds: {description: 'with country: the kinds of work its boards are asked for, ids from the engine list separated by commas (e.g. trades, education, healthcare); empty = the next 3 in that country, in turn', required: false, type: string, default: ''}
 
 permissions:
@@ -329,6 +330,8 @@ jobs:
           ENGINE_REF: ${{ inputs.engine_ref }}
           SCOUT_BOARD_COUNTRY: ${{ inputs.country }}
           SCOUT_BOARD_KINDS: ${{ inputs.kinds }}   # read by the engine as data (src/scout_boards.py named_kinds keeps the fixed ids only)
+          # Why (12 Nov 2026, sa for the owner: "Final, never again", "never retry a 401 or 403"): the Slovakia trial met a 403 in the browser and kept nothing; the hosts stay in this repo's run input, never in the public engine
+          SCOUT_BROWSER_FINAL: ${{ inputs.browser_final }}   # read by the engine as data (src/scout_boards.py seed_final keeps host-shaped names only)
           SCOUT_SERPAPI_KEY: ${{ secrets.CENTRAL_SCOUT_SERPAPI_KEY }}   # Google results for the board pass, under its own caps (src/scout_google_boards.py); never as SERPAPI_API_KEY
         run: |
           grep -q -- '--board-pass' src/scout.py || { echo "::error::engine ref '${ENGINE_REF:-main}' has no --board-pass (jobadabra: the Scout's board pass runs on its own allowance)"; exit 1; }
