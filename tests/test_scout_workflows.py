@@ -310,6 +310,13 @@ class BoardDiscovery(unittest.TestCase):
             self.assertIn(name, self.text)
         self.assertNotIn('SERPAPI_API_KEY:', self.text, "that name turns on the role searches' SerpApi lane, outside the month cap")
 
+    def test_every_workflow_that_asks_the_ai_through_the_relay_can_show_the_broker_who_it_is(self):
+        # 12 Nov 2026: board discovery's first run (43285176319) had no id-token permission; the broker refused all its AI calls and the run read nothing
+        for path in sorted(WORKFLOWS.glob('*.yml')):
+            text = path.read_text(encoding='utf-8')
+            if 'broker-relay-run.mjs' in text:
+                self.assertTrue('id-token: write' in text, f'{path.name}: no id-token: write; the broker knows a run by its OIDC token')
+
     def test_it_never_saves_the_scout_s_memory(self):
         saves = [part for part in self.text.split('\n      - ') if 'uses: actions/cache/save' in part]
         self.assertEqual(len(saves), 1)
