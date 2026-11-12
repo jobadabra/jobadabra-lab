@@ -21,6 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       batch: {description: 'candidates to probe this run', required: false, default: '500'}
+      engine_ref: {description: 'a TRIAL of an unmerged engine change: the branch or commit of the public engine to run, by hand only; empty or exactly `main` is the real run. Any other ref reads the real saved memory and index, runs every step, and uploads and saves nothing (a branch must never write the live index); the branch must contain `--no-upload` (jobadabra sk 4/5)', required: false, default: ''}
       country: {description: 'country for the board pass (a name or code from the pool list, e.g. Moldova); empty = the thinnest not done lately', required: false, default: ''}
 
 permissions:
@@ -28,7 +29,8 @@ permissions:
   id-token: write   # the broker knows a run by its OIDC token (desktop/e2e/lib/broker-client.mjs)
 
 concurrency:
-  group: central-scout
+  # Why (sk, 11 Nov 2026): a trial of an unmerged branch writes nothing, so it must not wait behind (or hold up) the real run: a GitHub-side run stuck in progress held every later run for 40 minutes
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.engine_ref || 'main') != 'main' && 'central-scout-trial' || 'central-scout' }}
   cancel-in-progress: false
 
 env:
@@ -68,17 +70,31 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30   # owner, 24 Oct 2026: 30 minutes so a run reaches more of its feed slice (20 on 23 Oct); the feeds are verified in slices (src/scout_carry.py)
     env:
+      TRIAL: ${{ github.event_name == 'workflow_dispatch' && (inputs.engine_ref || 'main') != 'main' }}   # Why (sk, 11 Nov 2026, owner: no proof waits for a merge or a schedule when a by-hand run can give it): a run of another ref proves a change from its branch, and writes nothing: no index published, no cache, no memory saved
       SCOUT_MEMORY_URL: https://www.jobadabra.top/api/scout-memory   # the site's private copy of the scout's memory (web#457); the key is INDEX_PUBLISH_KEY, as for the index
       PYTHONUNBUFFERED: '1'   # 22 Oct 2026: a cancelled run lost every line the scout had printed but not flushed ("no log line for 37 min")
     steps:
       - name: When this job started (the scout's deadline counts from here)
         run: echo "JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      - name: A trial takes only a branch of our own engine repo (never a pull ref, a tag or a commit)
+        if: env.TRIAL == 'true'
+        env:
+          ENGINE_REPO: ${{ vars.OWNER_OF_JOBADABRA }}/jobadabra
+          ENGINE_REF: ${{ inputs.engine_ref }}
+        # Why (sk, 11 Nov 2026, owner, asked via AskUserQuestion: "Accept, branches only (Recommended)"): the trial runs the branch's code with the index key, so no outside contributor's code may reach it: only a branch that exists in our own repo, resolved here by name.
+        run: |
+          fail() { echo "::error::engine_ref '$ENGINE_REF' is refused: $1"; exit 1; }
+          case "$ENGINE_REF" in
+            refs/*|pull/*|*..*|-*|*[!A-Za-z0-9._/-]*) fail "a trial takes the plain name of a branch of $ENGINE_REPO" ;;
+          esac
+          printf '%s' "$ENGINE_REF" | grep -Eq '^[0-9a-fA-F]{7,40}$' && fail "that is a commit id, not a branch name"
+          git ls-remote --exit-code --heads "https://github.com/$ENGINE_REPO" "refs/heads/$ENGINE_REF" > /dev/null || fail "no such branch in $ENGINE_REPO (a tag, a pull request or a fork's branch does not count)"
       - name: The public engine (src/, desktop/e2e, the shared actions); this repo is checked out at ops below
         uses: actions/checkout@v5
         with:
           # Why (1 Nov 2026, rs 6b/6): the job moved here from the public repo, so "this repo" is the lab now; the engine is the other checkout. Owner from the variable, never a literal (org move, go-org-move-1e).
           repository: ${{ vars.OWNER_OF_JOBADABRA }}/jobadabra
-          ref: main
+          ref: ${{ inputs.engine_ref || 'main' }}
       - name: This repo (the curated seed lists and the discovery; public since 1 Nov 2026, so no App token)
         uses: actions/checkout@v5
         with:
@@ -150,6 +166,7 @@ jobs:
       - name: Rank the queue by each source's measured yield
         run: python ops/discovery/priorities.py --db data/jobs.sqlite
       - name: Save the candidate list now (Common Crawl's 27 min must not be paid again if this run is cancelled; 22 Oct 2026)
+        if: env.TRIAL != 'true'
         uses: actions/cache/save@v5
         with:
           path: |
@@ -170,11 +187,19 @@ jobs:
           # What still bounds a run: its 30 minutes, the engine's own ceiling (src/ai/decide.py CENTRAL_MAX_CALLS), and the broker's stop when the Codex plan says
           # its budget is spent (the relay latches; web#448 keeps these calls off the Claude plan past the 70% line). Items not reached stay unjudged, never defaulted.
           CENTRAL_AI_CAP: '0'
+          ENGINE_REF: ${{ inputs.engine_ref }}   # read by the shell as data, never pasted into the script
           BATCH: ${{ inputs.batch || '500' }}
           SCOUT_TITLE_KINDS: ops/config/title_kinds.json.gz   # titles judged on the owner's Claude plan (tools/recount_title_kinds.py); absent: nothing changes
           SCOUT_BOARD_COUNTRY: ${{ inputs.country }}
           SCOUT_SERPAPI_KEY: ${{ secrets.CENTRAL_SCOUT_SERPAPI_KEY }}   # Google results for the board pass, under its own caps (src/scout_google_boards.py); never as SERPAPI_API_KEY
-        run: node desktop/e2e/broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" -- python -m src scout --batch "$BATCH" --publish-index
+        run: |
+          publish=--publish-index
+          if [ "$TRIAL" = true ]; then
+            # a trial runs the branch's own code with the key that reads the index (the same key writes it: the site has no read-only key), so the branch must know the flag, else it is refused
+            grep -q -- '--no-upload' src/scout.py || { echo "::error::engine ref '$ENGINE_REF' has no --no-upload (rebase it on the jobadabra 4/5 change); refusing the trial"; exit 1; }
+            publish="--publish-index --no-upload"; echo "trial of engine ref '$ENGINE_REF': every step runs, the index is not uploaded"
+          fi
+          node desktop/e2e/broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" -- python -m src scout --batch "$BATCH" $publish
       - name: Tell the owner once if Codex refused or a call failed (the AI judgments wait, nothing is paid)
         if: always() && steps.scout.outputs.skipped == 'true'
         uses: ./.github/actions/ai-skipped-alert
@@ -195,7 +220,7 @@ jobs:
             --data-urlencode "chat_id=${CHAT}" \
             --data-urlencode "text=❌ Central scout failed, the employer index is not updated: ${RUN_URL}" > /dev/null
       - name: Save the scout's candidate list
-        if: always()
+        if: always() && env.TRIAL != 'true'
         uses: actions/cache/save@v5
         with:
           path: |
@@ -206,7 +231,7 @@ jobs:
       # Why (6 Nov 2026, owner: "Yes, copy it to R2 (Recommended)"): the same three things the cache keeps, as one gzipped tar, after every run and also when a later step failed, as the cache save does.
       # The site refuses a save under half its newest copy (a scout that started empty must not replace a good memory) and drops copies older than 30 days; a refusal says one line here and never fails the run.
       - name: Save the scout's memory to the site
-        if: always()
+        if: always() && env.TRIAL != 'true'
         continue-on-error: true
         timeout-minutes: 3
         env:
