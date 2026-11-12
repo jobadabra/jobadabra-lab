@@ -149,17 +149,13 @@ class CentralScout(unittest.TestCase):
         # 12 Nov 2026 (bj, owner: "own job"): the board pass left the scout's run for its own job, behind its own relay, capped by the engine's JOB_CALLS; no extra calls on the scout's cap
         self.assertNotIn('CENTRAL_AI_EXTRA', self.code)
         self.assertIn('broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" -- python -m src scout', self.code)
-        self.assertIn('broker-relay-run.mjs --job central-scout-boards --cap "$cap" -- python -m src scout --board-pass', self.code)
         self.assertIn("steps.scout.outputs.skipped == 'true'", self.code)
-        self.assertIn("steps.boards.outputs.skipped == 'true'", self.code)
+        self.assertNotIn('--board-pass', self.code, '12 Nov 2026 (bd): the board pass runs in board-discovery.yml (BoardDiscovery below)')
         self.assertIn('ai-skipped-alert', self.code, 'a refused call tells the owner once')
 
     def test_it_is_given_the_title_seed_and_the_country_and_the_search_key_under_their_own_names(self):
         self.assertIn('SCOUT_TITLE_KINDS: ops/config/title_kinds.json.gz', self.text)
-        self.assertIn('country: {description', self.text)
-        self.assertIn('SCOUT_BOARD_COUNTRY: ${{ inputs.country }}', self.text)
-        self.assertIn('SCOUT_SERPAPI_KEY: ${{ secrets.CENTRAL_SCOUT_SERPAPI_KEY }}', self.text)
-        self.assertNotIn('SERPAPI_API_KEY:', self.text, "that name turns on the role searches' SerpApi lane, outside the month cap")
+        self.assertIn('SCOUT_BOARD_DB: data/boards.sqlite', self.text, "board discovery's boards are published with the index")
 
     @unittest.skipUnless((ENGINE / 'src' / 'scout_core.py').exists(), 'the public engine is not checked out next to this repo (lab-ci sets JOBADABRA_PUBLIC, so it runs there)')
     def test_the_job_limit_covers_setup_both_budgets_and_the_publish_reserve(self):
@@ -229,16 +225,7 @@ class ScoutMemoryOnTheSite(unittest.TestCase):
         self.assertEqual([(r['method'], r['path'], r['auth']) for r in self.site.requests], [('GET', '/api/scout-memory', 'Bearer the-key')])
         self.assertEqual((self.root / 'temp' / 'output').read_text(), 'restored=true\n', 'the boards job saves only a memory that came back')
 
-    def test_the_boards_job_never_saves_a_memory_it_did_not_restore(self):
-        """12 Nov 2026, Gitar on lab#96: the boards job restored from the cache only; with none (evicted, a repo move as on 2 Nov) a by-hand country run started empty, and its
-        save, the newest copy, would be what the next scout run restores. It asks this run's scout copy first, then the site, and saves only when one came back."""
-        boards = self.text[self.text.index('\n  boards:\n'):]
-        self.assertIn('      - *memory-from-site\n', boards, 'the scout\'s own restore step, not a copy that drifts')
-        self.assertIn('SCOUT_MEMORY_URL: https://www.jobadabra.top/api/scout-memory', boards)
-        self.assertIn('restore-keys: |\n            central-scout-db-${{ github.run_id }}\n            central-scout-db-\n', boards,
-                      "this run's scout save before the newest copy, which may be the scout's early snapshot")
-        save = step(boards, "Save the scout's memory with the boards kept (the next scout run restores the newest copy and publishes them)")
-        self.assertIn("(steps.candidates.outputs.cache-matched-key != '' || steps.memory-site.outputs.restored == 'true')", save)
+    def test_with_nothing_on_the_site_the_step_says_it_did_not_restore(self):
         self.site.status, self.site.body = 404, b'none saved'
         self.run_step(self.RESTORE)
         self.assertFalse((self.root / 'temp' / 'output').exists(), 'nothing came back: no restored=true')
@@ -304,6 +291,37 @@ class ScoutMemoryOnTheSite(unittest.TestCase):
         self.assertEqual(self.site.requests, [], 'nothing was sent without a key or without data')
 
 
+class BoardDiscovery(unittest.TestCase):
+    """Guard: data. 12 Nov 2026, owner, asked via AskUserQuestion: "Separate lab workflow (Recommended)". Board discovery has its own concurrency group and its own memory
+    (data/boards.sqlite): it never saves the scout's memory, so a run of one never replaces the other's newer copy (Gitar on lab#96: a newest near-empty save is what the
+    next scout run restores). The scout reads its boards read only and publishes them."""
+    def setUp(self):
+        self.text = (WORKFLOWS / 'board-discovery.yml').read_text(encoding='utf-8')
+        self.scout = (WORKFLOWS / 'central-scout.yml').read_text(encoding='utf-8')
+
+    def test_it_runs_alone_on_its_own_cap_and_by_hand_or_from_the_worker(self):
+        self.assertIn("'board-discovery'", self.text, 'its own concurrency group: never waits behind the scout or replaces its pending run')
+        self.assertNotIn('schedule:', self.text, 'started by the www Worker, never a GitHub cron')
+        self.assertIn('broker-relay-run.mjs --job board-discovery --cap "$cap" -- python -m src scout --board-pass --db data/boards.sqlite', self.text)
+        self.assertIn("steps.boards.outputs.skipped == 'true'", self.text)
+        for name in ('cells: {description', 'country: {description', 'SCOUT_BOARD_COUNTRY: ${{ inputs.country }}', 'SCOUT_BOARD_CELLS: ${{ inputs.cells }}',
+                     'SCOUT_SERPAPI_KEY: ${{ secrets.CENTRAL_SCOUT_SERPAPI_KEY }}', 'ops/config/board_priority.txt',
+                     'SCOUT_BROWSER_FINAL: ${{ inputs.browser_final }}'):   # lab#99: a stop a trial met in the browser is never opened again
+            self.assertIn(name, self.text)
+        self.assertNotIn('SERPAPI_API_KEY:', self.text, "that name turns on the role searches' SerpApi lane, outside the month cap")
+
+    def test_it_never_saves_the_scout_s_memory(self):
+        saves = [part for part in self.text.split('\n      - ') if 'uses: actions/cache/save' in part]
+        self.assertEqual(len(saves), 1)
+        self.assertIn('path: data/boards.sqlite\n', saves[0])
+        self.assertIn('key: board-discovery-db-', saves[0])
+        self.assertNotIn('central-scout-db-', saves[0])
+        self.assertNotIn('-T "$zipped"', self.text, "never the site's copy of the scout's memory either")
+        restore = step(self.scout, "Board discovery's boards (its newest memory, read only)")
+        self.assertIn('restore-keys: board-discovery-db-', restore)
+        self.assertNotIn('boards.sqlite', step(self.scout, "Save the scout's candidate list"), 'the scout never saves discovery\'s memory')
+
+
 class ProductBrain(unittest.TestCase):
     def setUp(self):
         self.text = (WORKFLOWS / 'product-brain.yml').read_text(encoding='utf-8')
@@ -364,8 +382,8 @@ class CentralScoutGate(unittest.TestCase):
     def test_the_workflow_wires_the_gate_before_the_scout_and_the_backup_follows_the_worker(self):
         self.assertIn("cron: '26 4,10,16,22 * * *'", self.text, "the Worker (jobadabra-web, shared/intel-start.js) starts it at :25; the backup is the next minute")
         self.assertRegex(self.text, r"(?ms)^  gate:\n.*?permissions:\n      actions: read\n")
-        self.assertRegex(self.text, r"(?ms)^  scout:\n    needs: gate\n    if: needs\.gate\.outputs\.skip != 'true' && !inputs\.country ")
-        self.assertRegex(self.text, r"(?ms)^  boards:\n    needs: \[gate, scout\]\n    if: \$\{\{ !cancelled\(\) && needs\.gate\.outputs\.skip != 'true' \}\}\n")
+        self.assertRegex(self.text, r"(?ms)^  scout:\n    needs: gate\n    if: needs\.gate\.outputs\.skip != 'true'\n")
+        self.assertNotIn('\n  boards:\n', self.text, '12 Nov 2026 (bd): the board pass has its own workflow, board-discovery.yml')
 
     def test_a_schedule_run_is_skipped_when_the_worker_started_one_and_it_is_running_or_succeeded(self):
         running = {'id': 100, 'status': 'in_progress', 'conclusion': None}
