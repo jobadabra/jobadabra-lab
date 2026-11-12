@@ -34,7 +34,7 @@ def budget_seconds(name):
 
 def step(text, title):
     """-> the text of the workflow step named `title`, up to the next step."""
-    match = re.search(r'(?ms)^      - name: %s\n.*?(?=^      - |\Z)' % re.escape(title), text)
+    match = re.search(r'(?ms)^      - (?:&[\w-]+\n        )?name: %s\n.*?(?=^      - |\Z)' % re.escape(title), text)   # a step may carry an anchor (&memory-from-site)
     assert match, f'no step named "{title}"'
     return match.group(0)
 
@@ -146,9 +146,12 @@ class CentralScout(unittest.TestCase):
         self.assertIn('id-token: write', self.code)
         self.assertIn("CENTRAL_AI_CAP: '200'", self.code)   # 12 Nov 2026: with no cap a run was cancelled at its 30 minutes and published nothing (run 43135722488)
         # 12 Nov 2026 (bp): the relay also lets through the calls the engine counts outside its cap (board pass, Google's judge, a board's country, the probe), and no more
-        self.assertIn("CENTRAL_AI_EXTRA: '81'", self.code)
-        self.assertIn('broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" --extra "$CENTRAL_AI_EXTRA" -- python -m src scout', self.code)
+        # 12 Nov 2026 (bj, owner: "own job"): the board pass left the scout's run for its own job, behind its own relay, capped by the engine's JOB_CALLS; no extra calls on the scout's cap
+        self.assertNotIn('CENTRAL_AI_EXTRA', self.code)
+        self.assertIn('broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" -- python -m src scout', self.code)
+        self.assertIn('broker-relay-run.mjs --job central-scout-boards --cap "$cap" -- python -m src scout --board-pass', self.code)
         self.assertIn("steps.scout.outputs.skipped == 'true'", self.code)
+        self.assertIn("steps.boards.outputs.skipped == 'true'", self.code)
         self.assertIn('ai-skipped-alert', self.code, 'a refused call tells the owner once')
 
     def test_it_is_given_the_title_seed_and_the_country_and_the_search_key_under_their_own_names(self):
@@ -188,7 +191,7 @@ class ScoutMemoryOnTheSite(unittest.TestCase):
         script = self.root / 'step.sh'
         script.write_text(script_of(step(self.text, title)))
         env = {'PATH': os.environ['PATH'], 'HOME': str(self.root), 'RUNNER_TEMP': str(self.root / 'temp'), 'GITHUB_RUN_ID': '42118339535', 'GITHUB_RUN_ATTEMPT': '1',
-               'SCOUT_MEMORY_URL': url or self.site.url, 'INDEX_PUBLISH_KEY': key}
+               'SCOUT_MEMORY_URL': url or self.site.url, 'INDEX_PUBLISH_KEY': key, 'GITHUB_OUTPUT': str(self.root / 'temp' / 'output')}
         done = subprocess.run(['bash', '-e', str(script)], cwd=self.workspace, env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         if key:
@@ -203,7 +206,7 @@ class ScoutMemoryOnTheSite(unittest.TestCase):
         (data / 'geo.json').write_bytes(b'{}')
 
     def test_the_steps_sit_around_the_scout_and_only_the_site_copy_needs_the_key(self):
-        order = re.findall(r'(?m)^      - name: (.*)$', self.text)
+        order = re.findall(r'(?m)^      - (?:&[\w-]+\n        )?name: (.*)$', self.text)
         self.assertLess(order.index("Restore the scout's candidate list"), order.index(self.RESTORE))
         self.assertLess(order.index(self.RESTORE), order.index('Scout and publish the index'))
         self.assertLess(order.index('Scout and publish the index'), order.index(self.SAVE))
@@ -224,6 +227,21 @@ class ScoutMemoryOnTheSite(unittest.TestCase):
         self.assertEqual((data / 'cache' / 'a.json').read_bytes(), b'{"a":1}')
         self.assertEqual((data / 'geo.json').read_bytes(), b'{"Zurich":[47,8]}')
         self.assertEqual([(r['method'], r['path'], r['auth']) for r in self.site.requests], [('GET', '/api/scout-memory', 'Bearer the-key')])
+        self.assertEqual((self.root / 'temp' / 'output').read_text(), 'restored=true\n', 'the boards job saves only a memory that came back')
+
+    def test_the_boards_job_never_saves_a_memory_it_did_not_restore(self):
+        """12 Nov 2026, Gitar on lab#96: the boards job restored from the cache only; with none (evicted, a repo move as on 2 Nov) a by-hand country run started empty, and its
+        save, the newest copy, would be what the next scout run restores. It asks this run's scout copy first, then the site, and saves only when one came back."""
+        boards = self.text[self.text.index('\n  boards:\n'):]
+        self.assertIn('      - *memory-from-site\n', boards, 'the scout\'s own restore step, not a copy that drifts')
+        self.assertIn('SCOUT_MEMORY_URL: https://www.jobadabra.top/api/scout-memory', boards)
+        self.assertIn('restore-keys: |\n            central-scout-db-${{ github.run_id }}\n            central-scout-db-\n', boards,
+                      "this run's scout save before the newest copy, which may be the scout's early snapshot")
+        save = step(boards, "Save the scout's memory with the boards kept (the next scout run restores the newest copy and publishes them)")
+        self.assertIn("(steps.candidates.outputs.cache-matched-key != '' || steps.memory-site.outputs.restored == 'true')", save)
+        self.site.status, self.site.body = 404, b'none saved'
+        self.run_step(self.RESTORE)
+        self.assertFalse((self.root / 'temp' / 'output').exists(), 'nothing came back: no restored=true')
 
     def test_a_failed_read_says_one_line_with_the_answer_and_never_fails_the_run(self):
         warn = '::warning::'   # a run warning, so a rotated key does not hide in a green line; an empty bucket (the normal first run) is no warning
@@ -346,7 +364,8 @@ class CentralScoutGate(unittest.TestCase):
     def test_the_workflow_wires_the_gate_before_the_scout_and_the_backup_follows_the_worker(self):
         self.assertIn("cron: '26 4,10,16,22 * * *'", self.text, "the Worker (jobadabra-web, shared/intel-start.js) starts it at :25; the backup is the next minute")
         self.assertRegex(self.text, r"(?ms)^  gate:\n.*?permissions:\n      actions: read\n")
-        self.assertRegex(self.text, r"(?ms)^  scout:\n    needs: gate\n    if: needs\.gate\.outputs\.skip != 'true'\n")
+        self.assertRegex(self.text, r"(?ms)^  scout:\n    needs: gate\n    if: needs\.gate\.outputs\.skip != 'true' && !inputs\.country ")
+        self.assertRegex(self.text, r"(?ms)^  boards:\n    needs: \[gate, scout\]\n    if: \$\{\{ !cancelled\(\) && needs\.gate\.outputs\.skip != 'true' \}\}\n")
 
     def test_a_schedule_run_is_skipped_when_the_worker_started_one_and_it_is_running_or_succeeded(self):
         running = {'id': 100, 'status': 'in_progress', 'conclusion': None}
