@@ -143,12 +143,20 @@ jobs:
             if grep -q 'nothing to read this run' "$RUNNER_TEMP/board-pass.log"; then break; fi
             if grep -q '^skipped=true' "$GITHUB_OUTPUT" 2>/dev/null; then echo "board discovery: the AI was refused or failed, no further pass"; break; fi
           done
+      # Why (12 Nov 2026, owner: "Still getting on old telegram bots"; coordinator): this repo had no SELFHEAL_PUBLISH_KEY secret, so every alert below fell back to the old bot without a word. Say it in the run's annotations.
+      - name: The switchboard key is set (else the old CI-alerts bot sends the alerts below)
+        if: always()
+        env:
+          SELFHEAL_PUBLISH_KEY: ${{ secrets.SELFHEAL_PUBLISH_KEY }}
+        run: |
+          [ -n "$SELFHEAL_PUBLISH_KEY" ] || echo "::warning title=Notifications switchboard key missing::SELFHEAL_PUBLISH_KEY is empty in this repo, so the alerts of this run go to the old CI-alerts bot and no Notifications switch applies. The owner sets it: gh secret set SELFHEAL_PUBLISH_KEY"
       - name: Tell the owner once if Codex refused or a call failed (the AI judgments wait, nothing is paid)
         if: always() && steps.boards.outputs.skipped == 'true'
         uses: ./.github/actions/ai-skipped-alert
         with:
           bot-token: ${{ secrets.CI_ALERTS_TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.CI_ALERTS_TELEGRAM_CHAT_ID }}
+          switchboard-key: ${{ secrets.SELFHEAL_PUBLISH_KEY }}
           github-token: ${{ github.token }}
           notes-dir: ${{ runner.temp }}/ai-capped
       - name: Save board discovery's memory (the scout publishes its boards on its next run)
