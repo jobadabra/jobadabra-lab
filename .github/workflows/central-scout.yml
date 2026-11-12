@@ -164,8 +164,12 @@ jobs:
         id: scout
         env:
           INDEX_PUBLISH_KEY: ${{ secrets.INDEX_PUBLISH_KEY }}
-          # Why (5 Nov 2026, owner: "200 a run, after a fix"): a run asks at most 200 broker calls (about 10,000 items), which sorts the employers still without a kind in about 6 days; items past it stay unjudged, never defaulted. Web#448 stops these calls reaching the Claude plan past the 70% line, so this cap is no longer the only brake.
-          CENTRAL_AI_CAP: '200'
+          # Why (12 Nov 2026, owner, asked via AskUserQuestion by sa: "Remove the cap"; before it "200 a run, after a fix", 5 Nov 2026): the 200 were the relay's
+          # total, spent by the feed pass about 13 minutes into every run, so the board pass that runs last got no AI call: "0 boards proposed" in 12 of 12 runs read
+          # from 3 to 11 Nov, and employers' kinds of work were counted on about 1 feed in 10. '0' = no cap in the relay (desktop/e2e/lib/broker-relay-serve.mjs).
+          # What still bounds a run: its 30 minutes, the engine's own ceiling (src/ai/decide.py CENTRAL_MAX_CALLS), and the broker's stop when the Codex plan says
+          # its budget is spent (the relay latches; web#448 keeps these calls off the Claude plan past the 70% line). Items not reached stay unjudged, never defaulted.
+          CENTRAL_AI_CAP: '0'
           BATCH: ${{ inputs.batch || '500' }}
           SCOUT_TITLE_KINDS: ops/config/title_kinds.json.gz   # titles judged on the owner's Claude plan (tools/recount_title_kinds.py); absent: nothing changes
           SCOUT_BOARD_COUNTRY: ${{ inputs.country }}

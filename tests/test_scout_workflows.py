@@ -139,12 +139,12 @@ class CentralScout(unittest.TestCase):
         self.assertNotIn('Restore a cache saved under the old path list', self.text)
         self.assertNotIn('data/geo.json   # where each job place is', self.text)
 
-    def test_its_ai_runs_behind_the_broker_relay_on_the_200_call_cap(self):
+    def test_its_ai_runs_behind_the_broker_relay_with_no_cap_of_its_own(self):
         """Owner, 26 Oct 2026 "keep claude for the scout"; 31 Oct 2026 "We should use fully the Codex": no Anthropic key, no Free AI, no address off this machine."""
         self.assertNotRegex(self.code, r'(?i)anthropic', 'the scout holds no Anthropic key and no base URL')
         self.assertNotRegex(self.code, r'(?i)free_ai|JOBADABRA_AI_ENGINE', 'the scout never switches to Free AI or another engine')
         self.assertIn('id-token: write', self.code)
-        self.assertIn("CENTRAL_AI_CAP: '200'", self.code)
+        self.assertIn("CENTRAL_AI_CAP: '0'", self.code)   # owner, 12 Nov 2026: "Remove the cap" (the board pass, last in the run, got no call under 200)
         self.assertIn('broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" -- python -m src scout', self.code)
         self.assertIn("steps.scout.outputs.skipped == 'true'", self.code)
         self.assertIn('ai-skipped-alert', self.code, 'a refused call tells the owner once')
