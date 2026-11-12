@@ -183,9 +183,13 @@ jobs:
           INDEX_PUBLISH_KEY: ${{ secrets.INDEX_PUBLISH_KEY }}
           # Why 200 again (12 Nov 2026, sa): with no cap (lab #91, live for one run) by-hand run 43135722488 was cancelled at its 30 minutes and published nothing. Every feed
           # check asks the AI for its jobs' kinds and places; unbounded, the 24 readers waited on those calls and the index build read 185 of 7,627 feeds in its time.
-          # The 200 are the feed pass's brake (owner, 5 Nov 2026: "200 a run, after a fix"); the board pass still gets no call under it: its own allowance is the next fix.
+          # The 200 are the feed pass's brake (owner, 5 Nov 2026: "200 a run, after a fix"); the steps the engine counts outside it come on top (CENTRAL_AI_EXTRA).
           # Items past the cap stay unjudged, never defaulted. Web#448 stops these calls reaching the Claude plan past the 70% line.
           CENTRAL_AI_CAP: '200'
+          # Why (12 Nov 2026, bp): the engine counts some steps outside the cap (the board pass 24, Google's board judge 15, a board's country 12, the probe 30;
+          # src/ai/decide.py own_allowance/allowance=/probe_allowance), but the relay refused every call past 200, so the board pass got none (3-11 Nov: "0 boards proposed").
+          # The relay lets the cap plus these through; the engine still stops the feed pass at 200. An engine without --extra ignores it.
+          CENTRAL_AI_EXTRA: '81'
           ENGINE_REF: ${{ inputs.engine_ref }}   # read by the shell as data, never pasted into the script
           BATCH: ${{ inputs.batch || '500' }}
           SCOUT_TITLE_KINDS: ops/config/title_kinds.json.gz   # titles judged on the owner's Claude plan (tools/recount_title_kinds.py); absent: nothing changes
@@ -198,7 +202,7 @@ jobs:
             grep -q -- '--no-upload' src/scout.py || { echo "::error::engine ref '$ENGINE_REF' has no --no-upload (rebase it on the jobadabra 4/5 change); refusing the trial"; exit 1; }
             publish="--publish-index --no-upload"; echo "trial of engine ref '$ENGINE_REF': every step runs, the index is not uploaded"
           fi
-          node desktop/e2e/broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" -- python -m src scout --batch "$BATCH" $publish
+          node desktop/e2e/broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" --extra "$CENTRAL_AI_EXTRA" -- python -m src scout --batch "$BATCH" $publish
       - name: Tell the owner once if Codex refused or a call failed (the AI judgments wait, nothing is paid)
         if: always() && steps.scout.outputs.skipped == 'true'
         uses: ./.github/actions/ai-skipped-alert

@@ -145,7 +145,9 @@ class CentralScout(unittest.TestCase):
         self.assertNotRegex(self.code, r'(?i)free_ai|JOBADABRA_AI_ENGINE', 'the scout never switches to Free AI or another engine')
         self.assertIn('id-token: write', self.code)
         self.assertIn("CENTRAL_AI_CAP: '200'", self.code)   # 12 Nov 2026: with no cap a run was cancelled at its 30 minutes and published nothing (run 43135722488)
-        self.assertIn('broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" -- python -m src scout', self.code)
+        # 12 Nov 2026 (bp): the relay also lets through the calls the engine counts outside its cap (board pass, Google's judge, a board's country, the probe), and no more
+        self.assertIn("CENTRAL_AI_EXTRA: '81'", self.code)
+        self.assertIn('broker-relay-run.mjs --job central-scout --cap "$CENTRAL_AI_CAP" --extra "$CENTRAL_AI_EXTRA" -- python -m src scout', self.code)
         self.assertIn("steps.scout.outputs.skipped == 'true'", self.code)
         self.assertIn('ai-skipped-alert', self.code, 'a refused call tells the owner once')
 
