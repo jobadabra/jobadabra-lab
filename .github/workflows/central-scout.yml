@@ -211,17 +211,23 @@ jobs:
           chat-id: ${{ secrets.CI_ALERTS_TELEGRAM_CHAT_ID }}
           github-token: ${{ github.token }}
           notes-dir: ${{ runner.temp }}/ai-capped
+      # Why (12 Nov 2026, owner: "its' being shipped not in the right channel. It should be in Engineering"): a failed run is an engineering alert, so it goes to the
+      # CI-alerts bot (the Engineering channel, jobadabra-web shared/notify-registry.js), never the Product Brain chat (BRAIN_*, the Brain's own messages only).
+      # A trial uploads nothing, so it says it was a trial, not that the index is not updated (run 43148978827, a refused trial ref, said it was).
       - name: Tell the owner when it fails
         if: failure()
         env:
-          BOT: ${{ secrets.BRAIN_BOT_TOKEN }}
-          CHAT: ${{ secrets.BRAIN_CHAT_ID }}
+          BOT: ${{ secrets.CI_ALERTS_TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.CI_ALERTS_TELEGRAM_CHAT_ID }}
+          ENGINE_REF: ${{ inputs.engine_ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           [ -n "$BOT" ] && [ -n "$CHAT" ] || exit 0
+          if [ "$TRIAL" = true ]; then text="❌ Central scout trial of engine branch '${ENGINE_REF}' failed; a trial uploads nothing, the employer index was not touched: ${RUN_URL}"
+          else text="❌ Central scout failed, the employer index is not updated: ${RUN_URL}"; fi
           curl -fsS "https://api.telegram.org/bot${BOT}/sendMessage" \
             --data-urlencode "chat_id=${CHAT}" \
-            --data-urlencode "text=❌ Central scout failed, the employer index is not updated: ${RUN_URL}" > /dev/null
+            --data-urlencode "text=${text}" > /dev/null
       - name: Save the scout's candidate list
         if: always() && env.TRIAL != 'true'
         uses: actions/cache/save@v5
