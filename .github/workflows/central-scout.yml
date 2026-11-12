@@ -314,6 +314,12 @@ jobs:
       - name: Install the AI library
         continue-on-error: true
         run: pip install --quiet -r requirements.txt -r requirements-render.txt
+      # Why (12 Nov 2026, owner via sa: "Boards now, employers next (Recommended)"): a board the plain reader is refused on is measured once in this
+      # headless browser (honest user agent, fresh context, no cookies; a refusal is final) and published marked "needs a browser" (src/scout_boards.py).
+      - name: Chromium for the board pass's browser read (cached)
+        continue-on-error: true
+        uses: ./.github/actions/playwright-browser
+        with: {runtime: python, mode: both}
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
