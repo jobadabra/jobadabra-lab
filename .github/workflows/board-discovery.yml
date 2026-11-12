@@ -36,7 +36,7 @@ env:
 jobs:
   boards:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15   # the pass stops starting boards after 4 minutes (src/scout_boards.py BUDGET_S)
+    timeout-minutes: 25   # up to 3 passes; each stops starting boards after 4 minutes (src/scout_boards.py BUDGET_S), none starts after minute 13
     env:
       TRIAL: ${{ (inputs.engine_ref || 'main') != 'main' }}
       PYTHONUNBUFFERED: '1'
@@ -129,7 +129,20 @@ jobs:
           export SCOUT_BOARD_PRIORITY
           cap=$(python -c 'from src.scout_boards import JOB_CALLS; print(JOB_CALLS)')
           echo "board discovery: its own relay, cap $cap AI calls"
-          node desktop/e2e/broker-relay-run.mjs --job board-discovery --cap "$cap" -- python -m src scout --board-pass --db data/boards.sqlite
+          # Why (12 Nov 2026, owner: "Let's make it more efficient", over 11 by-hand runs): a run spent ~2 of its 4-6 minutes on setup for ONE country and
+          # used 18-31 of its 71 AI calls; several passes in one job read the next weakest countries on the same setup (each pass keeps its own cap and
+          # rests or clears its cells, so the next pick moves on). By hand with cells or a country, and a trial: one pass, as asked.
+          set -o pipefail   # a pass that fails must fail the step, not tee's status
+          passes=3
+          if [ -n "$SCOUT_BOARD_CELLS$SCOUT_BOARD_COUNTRY" ] || [ "$TRIAL" = true ]; then passes=1; fi
+          began=$(date +%s)
+          for pass in $(seq 1 "$passes"); do
+            if [ $(( $(date +%s) - began )) -gt 780 ]; then echo "board discovery: pass $pass not started (13 minutes used)"; break; fi
+            echo "board discovery: pass $pass of $passes"
+            node desktop/e2e/broker-relay-run.mjs --job board-discovery --cap "$cap" -- python -m src scout --board-pass --db data/boards.sqlite | tee "$RUNNER_TEMP/board-pass.log"
+            if grep -q 'nothing to read this run' "$RUNNER_TEMP/board-pass.log"; then break; fi
+            if grep -q '^skipped=true' "$GITHUB_OUTPUT" 2>/dev/null; then echo "board discovery: the AI was refused or failed, no further pass"; break; fi
+          done
       - name: Tell the owner once if Codex refused or a call failed (the AI judgments wait, nothing is paid)
         if: always() && steps.boards.outputs.skipped == 'true'
         uses: ./.github/actions/ai-skipped-alert
