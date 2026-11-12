@@ -27,6 +27,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  id-token: write   # the broker knows a run by its OIDC token (desktop/e2e/lib/broker-client.mjs); without it every AI call failed (run 43285176319)
 
 env:
   JOBADABRA_DISABLE: notion,telegram,mail,google_jobs,enrich,score,auto_kits,insights,index   # no user is behind this run
