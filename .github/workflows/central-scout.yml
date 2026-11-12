@@ -181,12 +181,11 @@ jobs:
         id: scout
         env:
           INDEX_PUBLISH_KEY: ${{ secrets.INDEX_PUBLISH_KEY }}
-          # Why (12 Nov 2026, owner, asked via AskUserQuestion by sa: "Remove the cap"; before it "200 a run, after a fix", 5 Nov 2026): the 200 were the relay's
-          # total, spent by the feed pass about 13 minutes into every run, so the board pass that runs last got no AI call: "0 boards proposed" in 12 of 12 runs read
-          # from 3 to 11 Nov, and employers' kinds of work were counted on about 1 feed in 10. '0' = no cap in the relay (desktop/e2e/lib/broker-relay-serve.mjs).
-          # What still bounds a run: its 30 minutes, the engine's own ceiling (src/ai/decide.py CENTRAL_MAX_CALLS), and the broker's stop when the Codex plan says
-          # its budget is spent (the relay latches; web#448 keeps these calls off the Claude plan past the 70% line). Items not reached stay unjudged, never defaulted.
-          CENTRAL_AI_CAP: '0'
+          # Why 200 again (12 Nov 2026, sa): with no cap (lab #91, live for one run) by-hand run 43135722488 was cancelled at its 30 minutes and published nothing. Every feed
+          # check asks the AI for its jobs' kinds and places; unbounded, the 24 readers waited on those calls and the index build read 185 of 7,627 feeds in its time.
+          # The 200 are the feed pass's brake (owner, 5 Nov 2026: "200 a run, after a fix"); the board pass still gets no call under it: its own allowance is the next fix.
+          # Items past the cap stay unjudged, never defaulted. Web#448 stops these calls reaching the Claude plan past the 70% line.
+          CENTRAL_AI_CAP: '200'
           ENGINE_REF: ${{ inputs.engine_ref }}   # read by the shell as data, never pasted into the script
           BATCH: ${{ inputs.batch || '500' }}
           SCOUT_TITLE_KINDS: ops/config/title_kinds.json.gz   # titles judged on the owner's Claude plan (tools/recount_title_kinds.py); absent: nothing changes
