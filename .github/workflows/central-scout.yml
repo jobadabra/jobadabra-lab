@@ -125,7 +125,10 @@ jobs:
       # Replaces the one-time restore of the old path list (#80): run 42118339535 saved under the new list, so the cache is found again.
       # Whatever fails here says one line and never fails the run: the scout then starts from its seed lists, as it did before. A failure shows as a run warning (a rotated key must not hide in a green line); an empty bucket, the normal first run, does not.
       # The read retries twice (Gitar-style review, 6 Nov 2026): one blip would start the scout empty, and the empty start is then cached, so later runs would never ask the site again.
-      - name: Restore the scout's memory from the site when the cache was not found
+      # Why (12 Nov 2026, Gitar on lab#96): the boards job runs this same step (*memory-from-site): with no cache it started from an empty data/ and its save shadowed the real memory.
+      - &memory-from-site
+        name: Restore the scout's memory from the site when the cache was not found
+        id: memory-site
         if: steps.candidates.outputs.cache-matched-key == ''
         continue-on-error: true
         timeout-minutes: 3
@@ -148,6 +151,7 @@ jobs:
           unpacked=$(mktemp -d)
           if tar -xzf "$zipped" -C "$unpacked" 2>/dev/null && mkdir -p data && cp -a "$unpacked"/. data/; then
             echo "scout memory: restored from R2 $(grep -i '^x-scout-memory:' "$heads" | tr -d '\r' | cut -d' ' -f2 | cut -c1-10)"
+            echo "restored=true" >> "${GITHUB_OUTPUT:-/dev/null}"
           else
             echo "::warning::scout memory: not restored from R2 (the copy did not unpack)"
           fi
@@ -270,6 +274,7 @@ jobs:
     env:
       TRIAL: ${{ github.event_name == 'workflow_dispatch' && (inputs.engine_ref || 'main') != 'main' }}   # a trial of an engine branch saves nothing, as in the scout job
       PYTHONUNBUFFERED: '1'
+      SCOUT_MEMORY_URL: https://www.jobadabra.top/api/scout-memory   # the site's copy, read by the restore step both jobs share (*memory-from-site)
     steps:
       - name: A trial takes only a branch of our own engine repo (the scout job's guard; that job does not run when a country is named)
         if: env.TRIAL == 'true'
@@ -291,7 +296,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Restore the scout's memory (the newest copy, the scout job's of this run when it ran)
+      # Why (12 Nov 2026, Gitar on lab#96): the bare prefix gave the newest copy, the scout's early snapshot when its final save never came; this run's own save is asked first.
+      - name: Restore the scout's memory (this run's scout copy, else the newest)
+        id: candidates
         uses: actions/cache/restore@v5
         with:
           path: |
@@ -299,7 +306,10 @@ jobs:
             data/cache
             data/geo.json
           key: central-scout-db-boards-${{ github.run_id }}
-          restore-keys: central-scout-db-
+          restore-keys: |
+            central-scout-db-${{ github.run_id }}
+            central-scout-db-
+      - *memory-from-site
       - name: Install the AI library
         continue-on-error: true
         run: pip install --quiet -r requirements.txt -r requirements-render.txt
@@ -325,8 +335,9 @@ jobs:
           chat-id: ${{ secrets.CI_ALERTS_TELEGRAM_CHAT_ID }}
           github-token: ${{ github.token }}
           notes-dir: ${{ runner.temp }}/ai-capped
+      # Why (12 Nov 2026, Gitar on lab#96): a pass that started from no memory must never save: its near-empty copy would be the newest, and the next scout run would restore it.
       - name: Save the scout's memory with the boards kept (the next scout run restores the newest copy and publishes them)
-        if: always() && env.TRIAL != 'true'
+        if: always() && env.TRIAL != 'true' && (steps.candidates.outputs.cache-matched-key != '' || steps.memory-site.outputs.restored == 'true')
         uses: actions/cache/save@v5
         with:
           path: |
