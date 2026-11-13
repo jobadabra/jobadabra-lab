@@ -238,6 +238,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}   # the workspace root is the engine checkout (this repo is at ops/): without it gh would look for central-scout.yml in the engine repo (Gitar on lab#111)
           JOB_STATUS: ${{ job.status }}
           BY_HAND: ${{ inputs.cells }}${{ inputs.country }}
         run: |
@@ -245,16 +246,18 @@ jobs:
           if [ "$TRIAL" = true ]; then say "not published: a trial saves no memory and publishes nothing"; exit 0; fi
           if [ -z "$(printf '%s' "$BY_HAND" | tr -d '[:space:]')" ]; then say "not published: a timer run; the scout's own slots (:25 of 4, 10, 16, 22 UTC) publish its boards"; exit 0; fi
           if [ "$JOB_STATUS" != success ]; then say "not published: the discovery did not end green ($JOB_STATUS)"; exit 0; fi
-          since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          lister() { python3 tools/gh_retry.py run list --workflow central-scout.yml --event workflow_dispatch --limit 20 --json databaseId,url --jq '.[] | "\(.databaseId) \(.url)"' 2>/dev/null || true; }
+          before=$(lister | cut -d' ' -f1)
           busy=$(python3 tools/gh_retry.py run list --workflow central-scout.yml --status in_progress --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)
           if ! python3 tools/gh_retry.py workflow run central-scout.yml --ref main > "$RUNNER_TEMP/dispatch.out" 2>&1; then
             echo "::warning::board discovery: the scout was not started: $(head -c 300 "$RUNNER_TEMP/dispatch.out" | tr '\n' ' ')"
             say "not published: the scout dispatch was refused ($(head -c 120 "$RUNNER_TEMP/dispatch.out" | tr '\n' ' '))"; exit 0
           fi
           link=""
-          for _ in 1 2 3 4 5 6; do   # the run appears in the list a few seconds after the dispatch
-            link=$(python3 tools/gh_retry.py run list --workflow central-scout.yml --event workflow_dispatch --created ">=$since" --limit 1 --json url --jq '.[0].url // empty' 2>/dev/null || true)
+          for _ in 1 2 3 4 5 6; do   # the run appears in the list a few seconds after the dispatch; the first one that was not listed before it is this one (Gitar on lab#111)
+            link=$(lister | while read -r id url; do printf '%s\n' "$before" | grep -qx "$id" || { echo "$url"; break; }; done)
             [ -n "$link" ] && break
             sleep 5
           done
-          if [ -n "$busy" ]; then say "published: run ${link:-<not listed yet>} (queued behind run $busy; it reads this memory when it starts)"; else say "published: run ${link:-<not listed yet>}"; fi
+          if [ -z "$link" ]; then say "published: the scout was started (its run was not listed within 30 s)"; exit 0; fi
+          if [ -n "$busy" ]; then say "published: run $link (queued behind run $busy; it reads this memory when it starts)"; else say "published: run $link"; fi
