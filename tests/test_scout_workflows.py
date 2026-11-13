@@ -310,6 +310,13 @@ class BoardDiscovery(unittest.TestCase):
             self.assertIn(name, self.text)
         self.assertNotIn('SERPAPI_API_KEY:', self.text, "that name turns on the role searches' SerpApi lane, outside the month cap")
 
+    def test_a_by_hand_run_publishes_only_when_asked(self):
+        """13 Nov 2026 (sa for the owner): a measuring run (#113) started a scout publish before its boards were read against the served index; publishing is `publish: true` on the dispatch."""
+        publish = step(self.text, 'A by-hand run that ended green starts the scout that publishes its boards, only when asked (publish set to true)')
+        self.assertIn('publish: {description', self.text)
+        self.assertIn('PUBLISH: ${{ inputs.publish }}', publish)
+        self.assertLess(publish.index('!= true ]; then say "not published: a measuring run'), publish.index('workflow run central-scout.yml'), 'the ask is checked before the scout is dispatched')
+
     def test_every_workflow_that_asks_the_ai_through_the_relay_can_show_the_broker_who_it_is(self):
         # 12 Nov 2026: board discovery's first run (43285176319) had no id-token permission; the broker refused all its AI calls and the run read nothing
         for path in sorted(WORKFLOWS.glob('*.yml')):
