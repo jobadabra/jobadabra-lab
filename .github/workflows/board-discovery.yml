@@ -157,7 +157,11 @@ jobs:
               merges=""; pids=""
               for country in $countries; do
                 cp data/boards.sqlite "$RUNNER_TEMP/lane-$country.sqlite"
-                ( SCOUT_BOARD_ONLY=$country SCOUT_SERPAPI_KEY='' node desktop/e2e/broker-relay-run.mjs --job board-discovery --cap "$cap" -- \
+                # Why (13 Nov 2026, run 43333990879): the engine lets one run at a time into a data folder (src/paths.py run_lock), so six lanes in the one data/
+                # ran one after another and Bulgaria's waited 18 minutes for the lock and failed. Each lane gets its own copy of data/ (the read-only AI answers
+                # come with it); only its boards memory comes back, through --board-merge.
+                rm -rf "$RUNNER_TEMP/data-$country"; cp -a data "$RUNNER_TEMP/data-$country"; rm -f "$RUNNER_TEMP/data-$country/boards.sqlite"
+                ( JOBADABRA_DATA_DIR="$RUNNER_TEMP/data-$country" SCOUT_BOARD_ONLY=$country SCOUT_SERPAPI_KEY='' node desktop/e2e/broker-relay-run.mjs --job board-discovery --cap "$cap" -- \
                     python -m src scout --board-pass --db "$RUNNER_TEMP/lane-$country.sqlite" > "$RUNNER_TEMP/lane-$country.log" 2>&1 ) &
                 pids="$pids $country:$!"
               done
