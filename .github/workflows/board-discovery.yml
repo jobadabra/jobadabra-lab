@@ -18,6 +18,7 @@ on:
       country: {description: 'by hand, the older form: one country (name or code) with kinds of work instead of families; overrides cells', required: false, type: string, default: ''}
       kinds: {description: 'with country: kinds of work, ids from the engine list separated by commas (e.g. trades, education); empty = the next 3 in that country', required: false, type: string, default: ''}
       lanes: {description: 'by hand: countries read side by side in each round (1-8; the engine picks different countries and merges each lane back: jobadabra src/scout_board_lanes.py); empty or 1 = one country at a time, as the timer runs it', required: false, type: string, default: ''}
+      reserve: {description: 'by hand: how many reported boards one pass reads (1-24; the engine clamps it and the pass reads 12 boards at most; its time grows in proportion: jobadabra src/scout_board_candidates.py reserve(), src/scout_boards.py budget_s()); empty = 4, as the timer runs it', required: false, type: string, default: ''}
       browser_final: {description: "job board hosts a trial's headless browser was stopped at (a refusal, a bot check, a sign-in page), separated by commas: kept as stopped before the board pass reads, so a real pass never opens them again (a trial saves no memory)", required: false, type: string, default: ''}
       engine_ref: {description: 'a TRIAL of an unmerged engine change: a branch of the public engine; it reads the real memory and saves nothing. Empty or `main` is the real run', required: false, type: string, default: ''}
 
@@ -121,6 +122,8 @@ jobs:
           SCOUT_BOARD_KINDS: ${{ inputs.kinds }}
           LANES: ${{ inputs.lanes }}
           SCOUT_BOARD_CELLS: ${{ inputs.cells }}   # read by the engine as data (src/scout_board_cells.py parse keeps known countries and families only)
+          # Why (13 Nov 2026, bp; sa: "a by-hand run reads more candidates per pass"; run 43520706763 read only 4 of 77 reported boards): by hand only, empty on the timer, so the schedule keeps 4; the engine clamps it (an older engine ignores it)
+          SCOUT_BOARD_RESERVE: ${{ inputs.reserve }}
           SCOUT_BOARD_SEED_DB: data/jobs.sqlite   # the first run starts from the scout's facts, Google's waiting sites and the browser's stops (src/scout_board_cells.py seed)
           # Why (12 Nov 2026, sa for the owner: "Final, never again", "never retry a 401 or 403"; lab#99): a trial saves no memory, so a stop it met in the browser is named here; the hosts stay in this repo's run input, never in the public engine
           SCOUT_BROWSER_FINAL: ${{ inputs.browser_final }}   # read by the engine as data (src/scout_boards.py seed_final keeps host-shaped names only)
