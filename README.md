@@ -27,3 +27,5 @@ data, and the **canary** rolls them out; all of that lives in the site's databas
 asks the site for the recipes matching the controls on the page, so a fix is a row of data that needs no release. Code changes happen only when
 a recipe cannot express the fix (a new kind of widget): triage files a private issue here and a person changes the **public** repo by hand.
 
+
+<!-- gl proof 13 Nov 2026: tests the shared PR-labels workflow; closed unmerged -->
