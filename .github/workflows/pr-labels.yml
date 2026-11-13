@@ -1,18 +1,8 @@
-# Sets a PR's two labels, in one job so a PR draws one row for it, not one per label (owner, 4 Nov 2026: "why we have 3 checks related to gh label? Cna't we have just oen ?").
-#   "Merge conflict" (owner, 30 Oct 2026): orange on each open PR GitHub says conflicts with its base. On a push to main (any open PR may now conflict) and on a PR push (it may be fixed).
-#   "Gitar: …" (owner, 28 Oct 2026): one coloured label from Gitar's verdict comment. On a PR push ("reviewing" until Gitar judges the head), on Gitar's review and on a new Gitar comment.
-#     Gray labels: "reviewing" (no verdict for the head), "working on PR comments" (set by the agent).
-# Every event checks out main's copy of the scripts and NEVER runs a PR's code; the only writes are labels.
-# Design (7 Nov 2026, gl; jobadabra's own pr-labels.yml holds the full text): the label is recomputed on a PR push, on Gitar's review or new comment and on EVERY push to main (all open PRs); the check_run trigger is gone (an edit-only verdict waits for the next of these; jobadabra's Worker tick also runs the sweep, other repos have none yet).
-# Why (4 Nov 2026, a8): a Gitar review still draws a second row, since pull_request_review runs on the PR's head. A new comment can't replace it: 47 of 145 reviews came with none, and Gitar's own check ended before its last comment on 4 of 21 PRs.
-# Why (30 Oct 2026, owner chose "run only on review + push"): on every Gitar comment edit it ran 151 times an hour, used up the repo's REST budget, and the runs
-# that met the limit left labels wrong in silence (#2516). Edits start nothing; a new Gitar comment does (about 12 an hour): after a push with an unchanged verdict
-# Gitar posts a new comment and submits no review (9 of the last 60 PRs, #2516 at 00:13).
-# Why (2 Nov 2026, owner: "basically on all the repos in the org... the same workflow"): the scripts are NOT copied here; this workflow checks them out from jobadabra/jobadabra main,
-# so a fix to a parser lands in every repo at once. Scripts and cases: tools/conflict-label.mjs, tools/gitar-label.mjs there.
-name: CI · PR labels
-# Why (30 Oct 2026, run names): the value stays quoted, or the ' #' in it starts a YAML comment and cuts the number off; a push to main and the Worker's sweep have no number, so they get their own words (4 Nov and 7 Nov 2026; a Gitar check no longer starts a run).
-run-name: "${{ github.event_name == 'push' && 'PR labels after a push to main' || github.event_name == 'workflow_dispatch' && 'PR labels sweep · on time (Worker cron)' || format('PR labels on #{0}', github.event.pull_request.number || github.event.issue.number) }}"
+# The caller of the org's ONE PR-labels workflow (owner, 13 Nov 2026: "One shared workflow (Recommended)"). This file is identical in every repo of the org (templates/org-repo/pr-labels.yml; the weekly org check
+# reports a drift): only the events that start it, the run name and the permissions are here. What the label shows, which event changes it and why: jobadabra's .github/workflows/pr-labels-shared.yml.
+name: PR
+# Why (30 Oct 2026, run names): the value stays quoted, or the ' #' in it starts a YAML comment and cuts the number off; a push to main, a Gitar check and the sweep have no number, so they get their own words.
+run-name: "${{ github.event_name == 'push' && 'PR labels after a push to main' || github.event_name == 'check_run' && 'PR labels after a Gitar check' || github.event_name == 'workflow_dispatch' && 'PR labels sweep · on time (Worker cron)' || format('PR labels on #{0}', github.event.pull_request.number || github.event.issue.number) }}"
 
 on:
   push:
@@ -23,53 +13,15 @@ on:
     types: [submitted, dismissed]
   issue_comment:
     types: [created]
-  workflow_dispatch:   # a person, or a timer that sweeps every open PR
-
-permissions:
-  contents: read
-  checks: read   # the head's first check suite gives its push time (tools/gitar-label.mjs)
-  pull-requests: write
-  issues: write   # creating a missing label (tools/gitar-label.mjs addLabel)
-
-# Why (30 Oct 2026): on main the newest push's run decides (tests/test_main_runs_finish.py) and reads every open PR anyway. Every other run is its own group, never
-# cancelled: a cancelled run is drawn as a failed check in the PR list (#2400, web #299). Runs needing a live sync re-read the verdict, head and labels after every write (converge in tools/gitar-label.mjs).
-concurrency:
-  group: pr-labels-${{ github.event_name == 'push' && 'main' || github.event_name == 'workflow_dispatch' && 'tick' || github.run_id }}
-  cancel-in-progress: true
+  check_run:
+    types: [created, completed]
+  workflow_dispatch:   # a person, or a timer that sweeps every open PR (jobadabra: the Worker's ten-minute tick, app-core/src/scheduler.js)
 
 jobs:
   labels:
-    name: PR labels
-    if: >-
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request_target' ||
-      (github.event_name == 'pull_request_review' && github.event.review.user.login == 'gitar-bot[bot]') ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'gitar-bot[bot]') ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, 'Gitar review'))
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15   # a hang guard: the two steps took 267 s at the very worst, queue included, in the last 30 runs of each
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          repository: jobadabra/jobadabra   # the scripts live there (public), not in this repo
-          ref: main
-          sparse-checkout: |
-            tools/conflict-label.mjs
-            tools/gitar-label.mjs
-            tools/gh_retry.py
-          sparse-checkout-cone-mode: false
-      - name: Label the open PRs that conflict
-        if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'pull_request_target') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}   # empty on a push to main: every open PR
-        run: node tools/conflict-label.mjs
-      - name: Set the label from Gitar's verdict
-        if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number || github.event.issue.number || 'all' }}   # a push to main and a sweep have none: every open PR
-        run: node tools/gitar-label.mjs "$PR"
+    permissions:   # at least what the called workflow asks for (its permissions: block), or GitHub refuses to start the run
+      contents: read
+      checks: read
+      pull-requests: write
+      issues: write
+    uses: jobadabra/jobadabra/.github/workflows/pr-labels-shared.yml@main
