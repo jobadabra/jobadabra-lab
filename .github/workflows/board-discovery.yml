@@ -150,7 +150,10 @@ jobs:
           failed=0
           # Why (13 Nov 2026, run 43360878796): 5 cells of 5 countries were asked with lanes=4 and only the first country was read (cells keep one pass, and
           # the lanes needed more than one). Cells of several countries now read side by side, one lane a country, in one round; a trial stays one pass.
-          cell_countries=$(printf '%s' "$SCOUT_BOARD_CELLS" | tr ',' '\n' | sed 's/:.*//' | tr -d ' \t' | sed -n '/^[a-z][a-z]$/p' | awk '!seen[$0]++' | tr '\n' ' ')
+          cell_codes=$(printf '%s' "$SCOUT_BOARD_CELLS" | tr ',' '\n' | sed 's/:.*//' | tr -d ' \t' | tr 'A-Z' 'a-z' | sed '/^$/d')
+          cell_countries=$(printf '%s\n' "$cell_codes" | sed -n '/^[a-z][a-z]$/p' | awk '!seen[$0]++' | tr '\n' ' ')
+          not_codes=$(printf '%s\n' "$cell_codes" | sed '/^[a-z][a-z]$/d' | tr '\n' ' ')
+          if [ -n "$(printf '%s' "$not_codes" | tr -d ' ')" ]; then echo "::warning::board discovery: cells whose country is not a 2-letter code get no lane: $not_codes"; fi
           by_cells=0
           if [ "$lanes" -gt 1 ] && [ "$TRIAL" != true ] && [ -z "$SCOUT_BOARD_COUNTRY" ] && [ "$(printf '%s' "$cell_countries" | wc -w)" -gt 1 ]; then by_cells=1; fi
           if [ "$lanes" -gt 1 ] && { [ "$passes" -gt 1 ] || [ "$by_cells" = 1 ]; }; then
