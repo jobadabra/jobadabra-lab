@@ -37,6 +37,10 @@ env:
 jobs:
   boards:
     runs-on: ubuntu-24.04
+    permissions:   # the job's own set replaces the workflow's: the same three, and actions: write only for the last step (it starts the scout)
+      contents: read
+      actions: write
+      id-token: write
     timeout-minutes: 25   # up to 3 passes; each stops starting boards after 4 minutes (src/scout_boards.py BUDGET_S), none starts after minute 13
     env:
       TRIAL: ${{ (inputs.engine_ref || 'main') != 'main' }}
@@ -218,9 +222,39 @@ jobs:
           switchboard-key: ${{ secrets.SELFHEAL_PUBLISH_KEY }}
           github-token: ${{ github.token }}
           notes-dir: ${{ runner.temp }}/ai-capped
-      - name: Save board discovery's memory (the scout publishes its boards on its next run)
+      - name: Save board discovery's memory (a by-hand run starts the scout below; a timer run waits for the scout's own slots)
         if: always() && env.TRIAL != 'true'
         uses: actions/cache/save@v5
         with:
           path: data/boards.sqlite
           key: board-discovery-db-${{ github.run_id }}
+      # Why (13 Nov 2026, sd; sa for the owner, root cause: this run only SAVES its memory and central-scout.yml publishes it in the index on its next start, the Worker's :25 slots of
+      # 4, 10, 16, 22 UTC, so by-hand runs that ended green left their counts unserved for hours: apps got 0 counts until bp started the scout by hand at 21:06Z, run 43507746613):
+      # a by-hand run (cells or a country given: the same test as the one-pass rule above) that ended green starts the scout itself, and the run says which: "published: run <link>" or
+      # "not published: <why>". A timer run never does (12 starts a day instead of 4, ~40 broker calls each); a trial never does (it saves no memory, and engine_ref=main is the real run).
+      # Trap: central-scout.yml keeps ONE pending run per concurrency group, so ten by-hand runs in an hour leave one running and one pending scout; the pending one reads the newest
+      # memory when it starts, so nothing is lost, and the line says "queued behind run <id>".
+      - name: A by-hand run that ended green starts the scout that publishes its boards
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          BY_HAND: ${{ inputs.cells }}${{ inputs.country }}
+        run: |
+          say() { echo "board discovery: $1"; echo "- board discovery: $1" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
+          if [ "$TRIAL" = true ]; then say "not published: a trial saves no memory and publishes nothing"; exit 0; fi
+          if [ -z "$(printf '%s' "$BY_HAND" | tr -d '[:space:]')" ]; then say "not published: a timer run; the scout's own slots (:25 of 4, 10, 16, 22 UTC) publish its boards"; exit 0; fi
+          if [ "$JOB_STATUS" != success ]; then say "not published: the discovery did not end green ($JOB_STATUS)"; exit 0; fi
+          since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          busy=$(python3 tools/gh_retry.py run list --workflow central-scout.yml --status in_progress --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)
+          if ! python3 tools/gh_retry.py workflow run central-scout.yml --ref main > "$RUNNER_TEMP/dispatch.out" 2>&1; then
+            echo "::warning::board discovery: the scout was not started: $(head -c 300 "$RUNNER_TEMP/dispatch.out" | tr '\n' ' ')"
+            say "not published: the scout dispatch was refused ($(head -c 120 "$RUNNER_TEMP/dispatch.out" | tr '\n' ' '))"; exit 0
+          fi
+          link=""
+          for _ in 1 2 3 4 5 6; do   # the run appears in the list a few seconds after the dispatch
+            link=$(python3 tools/gh_retry.py run list --workflow central-scout.yml --event workflow_dispatch --created ">=$since" --limit 1 --json url --jq '.[0].url // empty' 2>/dev/null || true)
+            [ -n "$link" ] && break
+            sleep 5
+          done
+          if [ -n "$busy" ]; then say "published: run ${link:-<not listed yet>} (queued behind run $busy; it reads this memory when it starts)"; else say "published: run ${link:-<not listed yet>}"; fi
