@@ -141,17 +141,28 @@ jobs:
           # Why (13 Nov 2026, owner: "Maybe we just need to run the Board discovery" "many times in parallel"): one country a pass filled the map too slowly, and two
           # runs at once would save over each other's memory (one cache file). Inside this one run, a round reads several different countries at once, each lane in
           # its own copy of the memory behind its own relay and cap, and the engine copies each lane's own country back. Google's results stay off in a lane (its
-          # month count is one number of the whole memory). By hand only; cells, a country or a trial keep one pass.
+          # month count is one number of the whole memory). By hand only; a country or a trial keeps one pass.
           case "$(printf '%s' "$LANES" | tr -d '[:space:]')" in [2-8]) lanes=$(printf '%s' "$LANES" | tr -d '[:space:]') ;; *) lanes=1 ;; esac
           for marker in board-lanes board-merge SCOUT_BOARD_ONLY; do   # an engine without every part of the lanes: one country at a time
             grep -rq -- "$marker" src/scout.py src/scout_board_lanes.py 2>/dev/null || { lanes=1; break; }
           done
           echo "board discovery: lanes=$lanes (asked: '${LANES:-}')"
           failed=0
-          if [ "$lanes" -gt 1 ] && [ "$passes" -gt 1 ]; then
+          # Why (13 Nov 2026, run 43360878796): 5 cells of 5 countries were asked with lanes=4 and only the first country was read (cells keep one pass, and
+          # the lanes needed more than one). Cells of several countries now read side by side, one lane a country, in one round; a trial stays one pass.
+          cell_countries=$(printf '%s' "$SCOUT_BOARD_CELLS" | tr ',' '\n' | sed 's/:.*//' | tr -d ' \t' | sed -n '/^[a-z][a-z]$/p' | awk '!seen[$0]++' | tr '\n' ' ')
+          by_cells=0
+          if [ "$lanes" -gt 1 ] && [ "$TRIAL" != true ] && [ -z "$SCOUT_BOARD_COUNTRY" ] && [ "$(printf '%s' "$cell_countries" | wc -w)" -gt 1 ]; then by_cells=1; fi
+          if [ "$lanes" -gt 1 ] && { [ "$passes" -gt 1 ] || [ "$by_cells" = 1 ]; }; then
             for round in $(seq 1 "$passes"); do
               if [ $(( $(date +%s) - began )) -gt 780 ]; then echo "board discovery: round $round not started (13 minutes used)"; break; fi
-              countries=$(python -m src scout --board-lanes "$lanes" --db data/boards.sqlite | tail -n 1)
+              if [ "$by_cells" = 1 ]; then
+                countries=$(printf '%s' "$cell_countries" | tr ' ' '\n' | head -n "$lanes" | tr '\n' ' ')
+                left=$(printf '%s' "$cell_countries" | tr ' ' '\n' | tail -n +"$((lanes + 1))" | tr '\n' ' ')
+                if [ -n "$left" ]; then echo "::warning::board discovery: more countries asked than lanes ($lanes); not read this run: $left"; fi
+              else
+                countries=$(python -m src scout --board-lanes "$lanes" --db data/boards.sqlite | tail -n 1)
+              fi
               if [ -z "$countries" ]; then echo "board discovery: nothing to read this round"; break; fi
               echo "board discovery: round $round of $passes, lanes: $countries"
               merges=""; pids=""
