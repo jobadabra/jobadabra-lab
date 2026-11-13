@@ -125,6 +125,9 @@ jobs:
           # Why (12 Nov 2026, sa for the owner: "Final, never again", "never retry a 401 or 403"; lab#99): a trial saves no memory, so a stop it met in the browser is named here; the hosts stay in this repo's run input, never in the public engine
           SCOUT_BROWSER_FINAL: ${{ inputs.browser_final }}   # read by the engine as data (src/scout_boards.py seed_final keeps host-shaped names only)
           SCOUT_SERPAPI_KEY: ${{ secrets.CENTRAL_SCOUT_SERPAPI_KEY }}   # Google results under their own caps (src/scout_google_boards.py); never as SERPAPI_API_KEY
+          # Why (13 Nov 2026, bp; owner via sa, asked via AskUserQuestion: "Any reported board (Recommended)"): the pass also reads the boards installs reported (jobadabra src/scout_board_candidates.py,
+          # GET <site>/api/scout-memory?boards=1 with the Scout's own key, host + countries + install count, never an install id). A trial runs an unmerged engine branch, so it never gets the key.
+          INDEX_PUBLISH_KEY: ${{ env.TRIAL != 'true' && secrets.INDEX_PUBLISH_KEY || '' }}
         run: |
           grep -q 'def discover' src/scout.py || { echo "::error::engine ref '${ENGINE_REF:-main}' has no board discovery (jobadabra src/scout_board_cells.py)"; exit 1; }
           SCOUT_BOARD_PRIORITY=$(tr -d '\n' < ops/config/board_priority.txt)
