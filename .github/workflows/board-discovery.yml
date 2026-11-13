@@ -20,6 +20,7 @@ on:
       lanes: {description: 'by hand: countries read side by side in each round (1-8; the engine picks different countries and merges each lane back: jobadabra src/scout_board_lanes.py); empty or 1 = one country at a time, as the timer runs it', required: false, type: string, default: ''}
       reserve: {description: 'by hand: how many reported boards one pass reads (1-24; the engine clamps it and the pass reads 12 boards at most; its time grows in proportion: jobadabra src/scout_board_candidates.py reserve(), src/scout_boards.py budget_s()); empty = 4, as the timer runs it', required: false, type: string, default: ''}
       browser_final: {description: "job board hosts a trial's headless browser was stopped at (a refusal, a bot check, a sign-in page), separated by commas: kept as stopped before the board pass reads, so a real pass never opens them again (a trial saves no memory)", required: false, type: string, default: ''}
+      publish: {description: 'by hand: start the Scout publish when this run ends green (true); empty or false = measure only, the memory is saved and the scout publishes it at its own slot (:25 of 4, 10, 16, 22 UTC). Read the new boards before you ask for it', required: false, type: string, default: ''}
       engine_ref: {description: 'a TRIAL of an unmerged engine change: a branch of the public engine; it reads the real memory and saves nothing. Empty or `main` is the real run', required: false, type: string, default: ''}
 
 concurrency:
@@ -237,18 +238,22 @@ jobs:
       # "not published: <why>". A timer run never does (12 starts a day instead of 4, ~40 broker calls each); a trial never does (it saves no memory, and engine_ref=main is the real run).
       # Trap: central-scout.yml keeps ONE pending run per concurrency group, so ten by-hand runs in an hour leave one running and one pending scout; the pending one reads the newest
       # memory when it starts, so nothing is lost, and the line says "queued behind run <id>".
-      - name: A by-hand run that ended green starts the scout that publishes its boards
+      # Why (13 Nov 2026, sa for the owner; bp): a measuring run published by itself (#113) before anyone had read the new boards against the served index: es run 43524652066 started scout 43526234931 at 23:19Z,
+      # against the hold "no publish before the diff is read". Publishing is now a choice: `publish: true` on the dispatch, never a side effect of measuring.
+      - name: A by-hand run that ended green starts the scout that publishes its boards, only when asked (publish set to true)
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}   # the workspace root is the engine checkout (this repo is at ops/): without it gh would look for central-scout.yml in the engine repo (Gitar on lab#111)
           JOB_STATUS: ${{ job.status }}
           BY_HAND: ${{ inputs.cells }}${{ inputs.country }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           say() { echo "board discovery: $1"; echo "- board discovery: $1" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
           if [ "$TRIAL" = true ]; then say "not published: a trial saves no memory and publishes nothing"; exit 0; fi
           if [ -z "$(printf '%s' "$BY_HAND" | tr -d '[:space:]')" ]; then say "not published: a timer run; the scout's own slots (:25 of 4, 10, 16, 22 UTC) publish its boards"; exit 0; fi
           if [ "$JOB_STATUS" != success ]; then say "not published: the discovery did not end green ($JOB_STATUS)"; exit 0; fi
+          if [ "$(printf '%s' "$PUBLISH" | tr -d '[:space:]' | tr 'A-Z' 'a-z')" != true ]; then say "not published: a measuring run (publish was not true); the memory is saved, the scout publishes it at its next slot or when you dispatch it"; exit 0; fi
           # gh through the engine's retry helper (the workspace root is the engine checkout, which ships tools/gh_retry.py since jobadabra#4028); plain gh when an engine has none
           gh_try() { if [ -f tools/gh_retry.py ]; then python3 tools/gh_retry.py "$@"; else gh "$@"; fi; }
           lister() { gh_try run list --workflow central-scout.yml --event workflow_dispatch --limit 20 --json databaseId,url --jq '.[] | "\(.databaseId) \(.url)"'; }
